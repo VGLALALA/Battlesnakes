@@ -115,12 +115,50 @@ fly deploy
 fly open
 ```
 
+### Cloudflare — the wrong shape for this workload
+
+Worth explaining rather than waving away, because Cloudflare is excellent and
+free and the reason it does not fit here is specific and interesting.
+
+**Workers Free gives 10 ms of CPU time per request.** This snake wants ~380 ms.
+Cloudflare's own figure for the average Worker is about 2.2 ms, which is the
+giveaway: Workers is built for short, I/O-bound edge requests, and the limit is
+on *CPU time* precisely because waiting on the network is the expected
+behaviour. A tree search is the opposite — it is all CPU and no waiting, so
+nothing about that limit is forgiving. Exceeding it fails that invocation, so
+the move is forfeited rather than merely weak.
+
+For scale: 10 ms at the measured ~1.2M nodes/s is about 12,000 nodes, so depth
+5-ish — and that is before WASM's slowdown and before JSON parsing eats into
+the same budget. You could force it to fit by setting `BUDGET_MS=5`, but you
+would be deliberately crippling the one thing that makes the snake strong, and
+flirting with hard failures, to use a platform that is free in a way Oracle
+already is without the compromise.
+
+**Workers Paid ($5/mo) lifts CPU to 30 s**, which would be ample. The obstacle
+there is architectural, not numeric: Workers runs V8 isolates and WASM, where
+`std::net::TcpListener` and `std::thread` do not exist. `src/http.rs` and
+`src/main.rs` would have to be replaced with a `workers-rs` fetch handler and
+the crate compiled to `wasm32-unknown-unknown`. The interesting part is that
+everything that matters would port cleanly — `state.rs`, `fill.rs`, `eval.rs`
+and `search.rs` are pure computation with no I/O and no threads — so this is a
+plausible afternoon, not a rewrite. Expect to lose roughly a ply to WASM being
+slower than native.
+
+**Cloudflare Containers** are paid-only (they need the same $5/mo Workers Paid
+plan) and the instance types are fractional: `lite` is 1/16 vCPU and `basic`
+1/4 vCPU. They also scale to zero, bringing back the cold-start problem. At
+that price a full core elsewhere is the better trade.
+
+One thing Cloudflare's edge network does *not* buy you here: the engine runs
+from three fixed regions, so what matters is the hop from the engine to your
+server, not from a user to the edge.
+
 ### Not worth it for this
 
-Vercel, Netlify and Cloudflare Pages are built for short-lived functions and
-static sites, not a long-running CPU-bound server on a hard deadline. Replit
-sleeps on free and its pricing is effort-based. GitHub Codespaces is a dev
-environment, not a host.
+Vercel and Netlify are built for short-lived functions and static sites, with
+the same CPU-shaped problem as Workers. Replit sleeps on free and its pricing
+is effort-based. GitHub Codespaces is a dev environment, not a host.
 
 > The Dockerfile has not been built on this machine — Docker was not
 > installed. It is conventional multi-stage Rust and the build/runtime images
