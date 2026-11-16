@@ -3,6 +3,10 @@ name = "battlesnake"
 version = "1.0.0"
 edition = "2021"
 description = "Iterative-deepening maximin Battlesnake with locality-restricted opponent enumeration, time-aware flood fill and Voronoi area control."
+# Two binaries ship here, so without this `cargo run` cannot pick one and
+# errors out. The server is the one you want by default; the arena is a
+# development tool reached with `--bin arena`.
+default-run = "battlesnake"
 
 [lib]
 name = "battlesnake"
