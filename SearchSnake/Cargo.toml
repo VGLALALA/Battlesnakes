@@ -1,0 +1,24 @@
+[package]
+name = "battlesnake"
+version = "1.0.0"
+edition = "2021"
+description = "Iterative-deepening maximin Battlesnake with locality-restricted opponent enumeration, time-aware flood fill and Voronoi area control."
+
+[lib]
+name = "battlesnake"
+path = "src/lib.rs"
+
+[[bin]]
+name = "battlesnake"
+path = "src/main.rs"
+
+[[bin]]
+name = "arena"
+path = "src/bin/arena.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
