@@ -23,26 +23,109 @@ cargo run --release          # serves on :8000
 curl localhost:8000/         # {"apiversion":"1",...}
 ```
 
-## Deploy
+## Hosting it for free
 
-### Fly.io
+There is a real tension here, and it is sharper for this snake than for a
+typical web app: **this search is CPU-bound and on a 500 ms clock.** Free tiers
+economise on exactly the two things it spends — CPU and uptime. A throttled or
+sleeping host does not just feel slower, it costs search depth, and depth is
+the strength.
 
-`fly.toml` and `Dockerfile` are in this folder, so:
+Ranked for *this* program:
+
+### Oracle Cloud Always Free — the best genuinely-free option
+
+A real always-on Linux VM: ARM Ampere A1, no sleep, no expiry. Oracle halved
+the Always Free ARM allowance in June 2026 from 4 OCPU / 24 GB to **2 OCPU /
+12 GB**, which is still two full cores — roughly twenty times the CPU of a free
+Render instance, and it never sleeps. For a snake that converts CPU directly
+into plies, nothing else free comes close.
+
+```bash
+# on the VM, once
+sudo apt update && sudo apt install -y git build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+git clone https://github.com/VGLALALA/Battlesnakes && cd Battlesnakes/SearchSnake
+cargo build --release
+```
+
+Then keep it running across reboots and logouts with systemd:
+
+```ini
+# /etc/systemd/system/searchsnake.service
+[Unit]
+Description=SearchSnake
+After=network.target
+
+[Service]
+ExecStart=/home/ubuntu/Battlesnakes/SearchSnake/target/release/battlesnake
+Environment=PORT=8000
+Environment=THREADS=2
+Restart=always
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now searchsnake
+```
+
+Two things will bite you. Oracle's firewall blocks everything by default — open
+your port in both the VCN security list *and* the instance's own `iptables`.
+And A1 capacity is scarce in US regions; "out of host capacity" is common, so
+you may have to retry or pick a different region (which costs latency).
+
+### Render — easiest free, but understand what you are getting
+
+`render.yaml` and the `Dockerfile` are in this folder. Easiest route is the
+dashboard: New → Web Service, point it at the repo, set **Root Directory** to
+`SearchSnake`, **Language** to Docker, region Oregon. Render sets `PORT` and
+the server reads it.
+
+The free plan gives **0.1 CPU and 512 MB**, and **sleeps after 15 minutes**
+idle with a cold start of about a minute. Both matter:
+
+- *The sleep is fatal if unmitigated.* A cold start burns far more than the
+  500 ms deadline, so the first move of a game is forfeited. Fix it with an
+  uptime monitor (UptimeRobot's free tier, or cron-job.org) pinging `/` every
+  10 minutes — that counts as inbound traffic and it never idles out. Watch
+  the allowance: free gives 750 instance-hours a month and a 24/7 service
+  burns ~720 of them, so this works but leaves no room for a second service.
+- *0.1 CPU costs plies.* A tenth of a core will not reach depth 8. Expect
+  materially weaker play than the numbers in the README, which were measured
+  on a full core. Raise `BUDGET_MARGIN_MS` so it answers shallow rather than
+  late.
+
+Render's own docs say not to use free instances for production. For trying it
+out, fine. For laddering, Oracle or $7/mo on Render's Starter plan.
+
+### Fly.io — no longer free
+
+`fly.toml` is still here and Fly is still a good host, but **the free tier is
+gone** for organisations created after 7 October 2024: a short trial, then
+pay-as-you-go at roughly $5/month minimum with a card on file. Treat `fly.toml`
+as the cheap-paid option, not the free one.
 
 ```bash
 fly launch --copy-config --no-deploy   # keeps the committed fly.toml
 fly deploy
-fly open                               # prints the public URL
+fly open
 ```
 
-Pick the region closest to the games you intend to play — see the comments in
-`fly.toml`. Any Docker host works equally well (Render, Railway, Cloud Run,
-a VPS); the Dockerfile is plain and has no build arguments.
+### Not worth it for this
+
+Vercel, Netlify and Cloudflare Pages are built for short-lived functions and
+static sites, not a long-running CPU-bound server on a hard deadline. Replit
+sleeps on free and its pricing is effort-based. GitHub Codespaces is a dev
+environment, not a host.
 
 > The Dockerfile has not been built on this machine — Docker was not
 > installed. It is conventional multi-stage Rust and the build/runtime images
-> are pinned to the same Debian release, but the first `fly deploy` is where
-> it gets proven.
+> are pinned to the same Debian release, but your first deploy is where it
+> gets proven. The Oracle route above skips Docker entirely.
 
 ### Just to try it, without deploying
 
@@ -62,8 +145,15 @@ budget, and the snake sleeps when the lid closes.
 cold start spends all of it, the move is forfeited, and a forfeited move early
 in a game usually loses it. On Fly that is `auto_stop_machines = "off"` plus
 `min_machines_running = 1`; other platforms call it "always on" or "no
-idling". This is the single most common reason a snake that looks strong
-locally plays badly on the ladder.
+idling"; on a free tier that sleeps, it means an uptime monitor pinging `/`
+every 10 minutes. This is the single most common reason a snake that looks
+strong locally plays badly on the ladder.
+
+**Give it a whole CPU if you can.** Unlike most web services, this one spends
+its entire request budget computing. Search cost grows exponentially with
+depth, so CPU converts almost linearly into plies — a tenth of a core costs
+roughly three plies against a full one. It is the difference between the
+depth-8 play the README measured and something distinctly weaker.
 
 **Host near the engine.** The engine runs in Oregon (US-WEST), Virginia
 (US-EAST) and the Netherlands (EUROPE). Round-trip time is subtracted from

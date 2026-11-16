@@ -64,7 +64,110 @@ lessons that are implemented directly: *score moves rather than branching on
 if/else chains*, and *eliminate moves into a region smaller than your own
 length* — you starve there even if it contains food.
 
-## Design
+## The algorithm, start to finish
+
+What happens in the ~380 ms between the engine asking for a move and getting
+one.
+
+### 1. Parse the board into a searchable state
+
+The request JSON becomes a `State`: where every snake is, what it is carrying,
+where the food and hazard are. The game mode (standard / royale / wrapped /
+constrictor) is read from the ruleset name and changes how moves resolve.
+
+### 2. Decide how long to think
+
+The engine advertises a timeout, usually 500 ms. Subtract a margin for network
+round-trip and parsing, and that is the budget. Nothing else about the search
+is time-dependent — it just deepens until the clock runs out.
+
+### 3. Search, one game turn at a time
+
+A turn of Battlesnake is simultaneous: everyone moves at once. There is no
+natural "my turn, your turn" to alternate over, so each game turn is modelled
+as **two layers**:
+
+```
+         max layer          we pick among our ≤3 legal moves
+            │
+         min layer          opponents pick their joint reply
+            │
+         apply              all moves resolve together, snakes may die
+            │
+         (next turn, one ply deeper)
+```
+
+The min layer assumes opponents choose whatever is worst for us. That is
+pessimistic — they might not spot it — but it is the right bias when the
+penalty for being wrong is death. Letting them "see" our move before replying
+is what makes the structure a valid alternating tree, so **alpha-beta pruning**
+applies: once a branch is proven worse than one already found, the rest of it
+is skipped unexamined.
+
+Two refinements keep the tree small enough to go deep:
+
+**Move ordering.** Alpha-beta only pays if the best move is tried first — a
+perfectly ordered tree is the *square root* of the size of an unordered one.
+Each node tries whatever was best at that ply in the previous iteration, then
+orders the rest by how much room the target square opens onto.
+
+**Locality.** Branching on every opponent jointly costs `3ⁱ` per turn, which
+collapses the depth reachable in a four-snake game. But an opponent too far
+away to reach us before the search horizon *cannot affect our score*, so it
+gets one cheap policy move instead of a branch. Only the nearest two of those
+close enough to matter are branched on. In a one-on-one, nothing is
+approximated at all — which is why duels are this snake's strongest format.
+
+### 4. Iterative deepening
+
+Rather than guess a depth, search depth 1, then 2, then 3, and so on until the
+budget runs out, keeping the best move from the last iteration that *finished*.
+This sounds wasteful — the shallow searches are thrown away — but each costs a
+fraction of the next, and the move ordering they produce makes the deep search
+cheaper than it would have been alone. It also means the snake always has an
+answer ready, however little time it had.
+
+### 5. Score the leaves
+
+At the horizon the position gets a number. Terminal positions come first:
+winning scores `MATE - ply` and losing scores `-MATE + ply`, so the search
+**prefers winning sooner and dying later** — a snake that scores all deaths
+equally stops trying to survive. A draw sits far above a loss and far below any
+live position, so it never trades a living position for mutual destruction.
+
+Otherwise the evaluation combines, in order of how much they matter:
+
+| Term | Why |
+| --- | --- |
+| **Trapped** | Sealed into a region smaller than your own body — you cannot survive there, whatever else is true |
+| **Starving** | Food further away than your remaining health |
+| **Area control** | Cells you reach before anyone else, versus your strongest rival |
+| **Length** | Being longer wins head-to-heads, with diminishing returns |
+| **Tactics** | Head-to-head geometry, squeezing opponents, centre bias, hazard |
+
+### 6. The two flood fills
+
+Area control and trap detection both come from a **time-aware flood fill**: a
+breadth-first expansion where a cell is passable at depth `d` only if the body
+sitting on it has moved off by then. That single rule replaces a pile of
+special cases — tail-chasing, slipping through a gap that is about to open,
+and refusing a gap a snake which just ate will still be blocking.
+
+The area-control fill expands from *every* living head at once and awards each
+cell to whoever arrives first; ties go to the longer snake, matching the
+head-to-head rule, and equal-length ties are marked contested because both
+snakes would die there. That is the Voronoi partition of the board, and the
+difference between our share and our best rival's is the main positional term.
+
+### 7. When everything loses
+
+Pure maximin reports `-MATE` for every move in a lost position and cannot tell
+them apart. But a move that loses only to one precise reply is far better in
+practice, because opponents make mistakes. So when every root move is a loss,
+the root re-ranks by the *mean* over opponent replies instead of the worst
+case — picking the line that gives the opponent the most chances to go wrong.
+
+## Design notes
 
 ### Occupancy without bodies
 
@@ -105,34 +208,32 @@ going to be blocking. It also means a wall built from your *own* body is
 correctly *not* treated as a trap — you outrun your own tail — while the same
 wall built by a longer snake is.
 
-### Search
+### Head-to-head geometry
 
-One game turn is a max layer (our move) followed by a min layer (the opponents'
-joint reply), after which all moves are applied together. That keeps alpha-beta
-valid while giving opponents the benefit of seeing our move — the pessimistic
-reading, which is the right bias when being wrong means dying.
+Heads can only collide on a square both can enter. On a 4-connected grid,
+neighbouring cells always have opposite parity, so two cells share a neighbour
+only at *even* distance. Head-to-head risk is therefore evaluated at distance
+two, not one — at distance one the danger is running into the other snake's
+body, which the occupancy test already covers.
 
-Mate scores fold in the ply, so the search prefers winning sooner and dying
-later; a snake that treats all deaths as equal stops fighting. A draw scores far
-above a loss and far below any live position, so it never trades a living
-position for mutual destruction.
+### Where the weights live
 
-Pure maximin has one real weakness: it reports `-MATE` for every move in a lost
-position and cannot tell them apart. A move that loses only to one precise reply
-is much better in practice, because opponents err. When every root move is a
-loss, the root re-ranks by the *mean* over replies instead of the minimum.
+All of them in one `Weights` struct, tunable by self-play (`arena tune`) or at
+runtime via `WEIGHTS=area=30,trap=800` — no rebuild. Keeping them in one place
+is what makes the tuner possible; scattered magic numbers cannot be searched.
 
-### Evaluation
+### Code map
 
-Ordered by how much it matters: survival (sealed into a region smaller than
-your own body; food out of reach of your health), then area control, then the
-length race, then tactics (head-to-head geometry, squeezing opponents, centre
-bias, hazard). Weights live in one struct and are tunable by self-play
-(`arena tune`) or at runtime via `WEIGHTS=area=30,trap=800`.
-
-Heads can only meet on a shared square, and on a 4-connected grid two cells
-share a neighbour only at even distance — so head-to-head risk is evaluated at
-distance two, not one.
+| File | Contents |
+| --- | --- |
+| `src/state.rs` | board representation and the official turn rules |
+| `src/fill.rs` | time-aware flood fill and Voronoi area control |
+| `src/eval.rs` | the evaluation and its weights |
+| `src/search.rs` | iterative-deepening maximin, alpha-beta, locality |
+| `src/api.rs` | Battlesnake JSON in and out |
+| `src/http.rs` | the HTTP server |
+| `src/json.rs` | the JSON parser |
+| `src/arena.rs` | self-play harness and baseline opponents |
 
 ## Measured strength
 

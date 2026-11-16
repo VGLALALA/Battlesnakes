@@ -1,0 +1,35 @@
+# Render blueprint.
+#
+# Render looks for render.yaml at the *repository root*. This snake lives in a
+# subfolder of the Battlesnakes repo, so either:
+#
+#   a) copy this file to the repo root and uncomment `rootDir`, or
+#   b) skip the blueprint and create the service in the dashboard, setting
+#      Root Directory = SearchSnake and Language = Docker. Less to go wrong.
+#
+# Render sets PORT itself and the server reads it, so it is not set here.
+#
+# Read the free-plan caveats in DEPLOY.md before relying on this: a free
+# instance gets 0.1 CPU and sleeps after 15 minutes idle. This search is
+# CPU-bound, so a tenth of a core costs real playing strength.
+
+services:
+  - type: web
+    name: searchsnake
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # rootDir: SearchSnake
+    plan: free
+    # Oregon is closest to the engine's US-WEST region. Round-trip time is
+    # subtracted from thinking time.
+    region: oregon
+    healthCheckPath: /
+    envVars:
+      # One worker: extra accept threads cannot help on a fraction of a core.
+      - key: THREADS
+        value: "1"
+      # Wider margin than the default 120ms, because a throttled instance is
+      # slower to parse, search and reply. Better to answer shallow than late.
+      - key: BUDGET_MARGIN_MS
+        value: "200"
