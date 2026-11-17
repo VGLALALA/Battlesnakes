@@ -73,10 +73,56 @@ WantedBy=multi-user.target
 sudo systemctl enable --now searchsnake
 ```
 
-Two things will bite you. Oracle's firewall blocks everything by default — open
-your port in both the VCN security list *and* the instance's own `iptables`.
-And A1 capacity is scarce in US regions; "out of host capacity" is common, so
-you may have to retry or pick a different region (which costs latency).
+#### Creating the instance
+
+In the Create Instance wizard, the defaults are right except where noted:
+
+| Field | Set it to |
+| --- | --- |
+| Shape | `VM.Standard.A1.Flex`, **2 OCPU / 12 GB** (look for "Always Free eligible") |
+| Image | Ubuntu 24.04 — the **aarch64/ARM** build, since A1 is ARM |
+| Subnet | **Public subnet** |
+| Assign a public IPv4 address | **Yes** |
+| VCN / subnet CIDR (`10.0.0.0/24`) | leave alone |
+| SSH keys | **Paste public key**, using `~/.ssh/id_ed25519.pub` |
+
+The CIDR is an internal private range and has nothing to do with whether the
+engine can reach you — that comes from the public subnet and public IP. The
+console warns that the quick wizard offers fewer options than building a VCN
+by hand; you do not need any of them.
+
+Subnet type cannot be changed afterwards, so getting "public subnet" and
+"assign a public IPv4 address" wrong means rebuilding the instance. Do not
+choose "No SSH keys" — there would be no way in.
+
+If the A1 shape reports **"out of host capacity"**, nothing is wrong: A1 is
+scarce in popular regions. Retry later or pick another region, remembering
+that region choice costs latency.
+
+#### Opening the port, in both places
+
+This is the step that catches everyone — Oracle blocks traffic at the cloud
+*and* the OS level, so one alone is not enough.
+
+1. **Cloud firewall.** Instance → its subnet → Security List → Add Ingress
+   Rule: source CIDR `0.0.0.0/0`, protocol TCP, destination port `8000`.
+2. **OS firewall.** Oracle's images ship with everything but SSH blocked:
+
+```bash
+sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8000 -j ACCEPT
+sudo netfilter-persistent save
+```
+
+Then check from your own machine, not from the VM — testing on the box itself
+passes even when the firewall is shut:
+
+```bash
+curl http://<public-ip>:8000/      # expect {"apiversion":"1",...}
+```
+
+That URL is what goes into play.battlesnake.com. Connect with
+`ssh ubuntu@<public-ip>` (user `ubuntu` on Ubuntu images, `opc` on Oracle
+Linux; never `root`).
 
 ### Render — easiest free, but understand what you are getting
 
